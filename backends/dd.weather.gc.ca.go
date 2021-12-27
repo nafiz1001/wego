@@ -1,8 +1,20 @@
 package backends
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/csv"
 	"encoding/xml"
 	"flag"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"math"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/schachmat/wego/iface"
 )
@@ -396,17 +408,119 @@ type siteData struct {
 	} `xml:"almanac"`
 }
 
-const (
-	site_list_townsURI  = "https://dd.meteo.gc.ca/citypage_weather/docs/site_list_towns_en.csv"
-	citypage_weatherURI = "https://dd.weather.gc.ca/citypage_weather/xml/%s/s%07d_%c.xml"
-)
-
 func (c *mscConfig) Setup() {
 	flag.StringVar(&c.lang, "msc-lang", "e", "dd.weather.gc.ca backend: the `LANGUAGE` to request from dd.weather.gc.ca (only e and f are supported")
 }
 
+func fetchLocation(location string) (lat float64, lon float64, err error) {
+	if matched, err := regexp.MatchString(`^-?[0-9]*(\.[0-9]+)?,-?[0-9]*(\.[0-9]+)?$`, location); matched && err == nil {
+		s := strings.Split(location, ",")
+
+		if lat, err = strconv.ParseFloat(s[0], 64); err != nil {
+			return -1, -1, fmt.Errorf("latitude error: %v", err)
+		}
+
+		if lon, err = strconv.ParseFloat(s[1], 64); err != nil {
+			return -1, -1, fmt.Errorf("longitude error: %v", err)
+		}
+	} else {
+		return -1, -1, fmt.Errorf("expected location to be only latitude,longitude")
+	}
+
+	return lat, lon, nil
+}
+
+func fetchNearestStation(lat float64, lon float64) (nearestStationCode string, province string, err error) {
+	const URI = "https://dd.meteo.gc.ca/citypage_weather/docs/site_list_towns_en.csv"
+
+	resp, err := http.Get(URI)
+	if err != nil {
+		return "", "", fmt.Errorf("unable to get (%s) %v", URI, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("unable to read response body (%s): %v", URI, err)
+	}
+
+	bodyReader := bytes.NewReader(body)
+
+	// skip first line
+	if firstLine, err := bufio.NewReader(bodyReader).ReadSlice('\n'); err != nil {
+		return "", "", err
+	} else {
+		bodyReader.Seek(int64(len(firstLine)), io.SeekStart)
+	}
+
+	minDistance := math.MaxFloat64
+	csv := csv.NewReader(bodyReader)
+	for {
+		record, err := csv.Read()
+		if err != io.EOF {
+			break
+		} else if err != nil {
+			return "", "", fmt.Errorf("unable to process the csv at %s: %v", URI, err)
+		}
+
+		stationLat, err := strconv.ParseFloat(record[3][:len(record[3])-1], 64)
+		if err != nil {
+			log.Print(err)
+			continue
+		}
+
+		stationLon, err := strconv.ParseFloat(record[4][:len(record[4])-1], 64)
+		if err != nil {
+			log.Print(err)
+			continue
+		}
+
+		distance := math.Pow(lat-stationLat, 2) + math.Pow(lon-stationLon, 2)
+		if distance < minDistance {
+			minDistance = distance
+			nearestStationCode = record[0]
+			province = record[2]
+		}
+	}
+
+	return nearestStationCode, province, nil
+}
+
+func fetchSiteData(stationCode string, province string, lang rune) (*siteData, error) {
+	URI := fmt.Sprintf("https://dd.weather.gc.ca/citypage_weather/xml/%s/%s_%c.xml", stationCode, province, lang)
+
+	resp, err := http.Get(URI)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get (%s) %v", URI, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read response body (%s): %v", URI, err)
+	}
+
+	var data siteData
+	if err = xml.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("unable to unmarshal response (%s): %v\nThe json body is: %s", URI, err, string(body))
+	}
+
+	return &data, nil
+}
+
 func (c *mscConfig) Fetch(location string, numdays int) iface.Data {
 	var ret iface.Data
+
+	if lat, lon, err := fetchLocation(location); err != nil {
+		log.Fatal(err)
+	} else if nearestStationCode, province, err := fetchNearestStation(lat, lon); err != nil {
+		log.Fatal(err)
+	} else if data, err := fetchSiteData(nearestStationCode, province, rune(c.lang[0])); err != nil {
+		log.Fatal(err)
+	} else {
+		log.Print(data)
+	}
+
 	return ret
 }
 
