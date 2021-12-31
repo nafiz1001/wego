@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"github.com/nafiz1001/wego/iface"
+
+	"golang.org/x/net/html/charset"
 )
 
 type mscConfig struct {
@@ -247,7 +249,7 @@ type siteData struct {
 					Start string `xml:"start,attr"`
 					End   string `xml:"end,attr"`
 				} `xml:"precipType"`
-				Accumulation struct {
+				Accumulation []struct {
 					Text   string `xml:",chardata"`
 					Name   string `xml:"name"`
 					Amount struct {
@@ -260,20 +262,21 @@ type siteData struct {
 			WindChill struct {
 				Text        string `xml:",chardata"`
 				TextSummary string `xml:"textSummary"`
-				Calculated  []struct {
+				Calculated  struct {
 					Text     string `xml:",chardata"`
 					UnitType string `xml:"unitType,attr"`
 					Class    string `xml:"class,attr"`
-					Index    string `xml:"index,attr"`
 				} `xml:"calculated"`
 				Frostbite string `xml:"frostbite"`
 			} `xml:"windChill"`
-			Uv struct {
-				Text        string `xml:",chardata"`
-				Category    string `xml:"category,attr"`
-				Index       string `xml:"index"`
-				TextSummary string `xml:"textSummary"`
-			} `xml:"uv"`
+			Visibility struct {
+				Text       string `xml:",chardata"`
+				OtherVisib struct {
+					Text        string `xml:",chardata"`
+					Cause       string `xml:"cause,attr"`
+					TextSummary string `xml:"textSummary"`
+				} `xml:"otherVisib"`
+			} `xml:"visibility"`
 			RelativeHumidity struct {
 				Text  string `xml:",chardata"`
 				Units string `xml:"units,attr"`
@@ -413,7 +416,7 @@ func (c *mscConfig) Setup() {
 }
 
 func fetchLocation(location string) (lat float64, lon float64, err error) {
-	if matched, err := regexp.MatchString(`^-?[0-9]*(\.[0-9]+)?,-?[0-9]*(\.[0-9]+)?$`, location); matched && err == nil {
+	if matched, err := regexp.MatchString(`^[0-9]*(\.[0-9]+)?,-[0-9]*(\.[0-9]+)?$`, location); matched && err == nil {
 		s := strings.Split(location, ",")
 
 		if lat, err = strconv.ParseFloat(s[0], 64); err != nil {
@@ -424,10 +427,10 @@ func fetchLocation(location string) (lat float64, lon float64, err error) {
 			return -1, -1, fmt.Errorf("longitude error: %v", err)
 		}
 	} else {
-		return -1, -1, fmt.Errorf("expected location to be only latitude,longitude")
+		return -1, -1, fmt.Errorf("expected location to be only positive latitude,longitude")
 	}
 
-	return lat, lon, nil
+	return lat, -lon, nil
 }
 
 func fetchNearestStation(lat float64, lon float64) (nearestStationCode string, province string, err error) {
@@ -455,9 +458,10 @@ func fetchNearestStation(lat float64, lon float64) (nearestStationCode string, p
 
 	minDistance := math.MaxFloat64
 	csv := csv.NewReader(bodyReader)
+	csv.Read() // skip header
 	for {
 		record, err := csv.Read()
-		if err != io.EOF {
+		if err == io.EOF {
 			break
 		} else if err != nil {
 			return "", "", fmt.Errorf("unable to process the csv at %s: %v", URI, err)
@@ -487,7 +491,7 @@ func fetchNearestStation(lat float64, lon float64) (nearestStationCode string, p
 }
 
 func fetchSiteData(stationCode string, province string, lang rune) (*siteData, error) {
-	URI := fmt.Sprintf("https://dd.weather.gc.ca/citypage_weather/xml/%s/%s_%c.xml", stationCode, province, lang)
+	URI := fmt.Sprintf("https://dd.weather.gc.ca/citypage_weather/xml/%s/%s_%c.xml", province, stationCode, lang)
 
 	resp, err := http.Get(URI)
 	if err != nil {
@@ -500,9 +504,13 @@ func fetchSiteData(stationCode string, province string, lang rune) (*siteData, e
 		return nil, fmt.Errorf("unable to read response body (%s): %v", URI, err)
 	}
 
+	reader := bytes.NewReader(body)
+	decoder := xml.NewDecoder(reader)
+	decoder.CharsetReader = charset.NewReaderLabel
+
 	var data siteData
-	if err = xml.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("unable to unmarshal response (%s): %v\nThe json body is: %s", URI, err, string(body))
+	if err = decoder.Decode(&data); err != nil {
+		return nil, fmt.Errorf("unable to unmarshal response (%s): %v\nThe xml content is: %s", URI, err, string(body))
 	}
 
 	return &data, nil
