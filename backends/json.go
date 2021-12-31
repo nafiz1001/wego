@@ -5,7 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 
-	"github.com/schachmat/wego/iface"
+	"github.com/nafiz1001/wego/iface"
 )
 
 type jsnConfig struct {

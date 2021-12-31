@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	_ "github.com/nafiz1001/wego/backends"
+	_ "github.com/nafiz1001/wego/frontends"
+	"github.com/nafiz1001/wego/iface"
 	"github.com/schachmat/ingo"
-	_ "github.com/schachmat/wego/backends"
-	_ "github.com/schachmat/wego/frontends"
-	"github.com/schachmat/wego/iface"
 )
 
 func pluginLists() {
